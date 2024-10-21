@@ -4,19 +4,77 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
+	"time"
 
 	"golang.org/x/net/html"
 )
 
-const URL = "https://scrape-me.dreamsofcode.io"
+func contains(arr []string, val string) bool {
+	for _, item := range arr {
+		if item == val {
+			return true
+		}
+	}
+	return false
+}
+
+var results = []string{}
+
+var wg = &sync.WaitGroup{}
+var mut = &sync.Mutex{}
 
 func main() {
-	response, err := http.Get(URL)
+	start := time.Now()
+
+	const URL = "https://scrape-me.dreamsofcode.io"
+
+	wg.Add(1)
+	go getValidURLs(URL)
+	wg.Wait()
+
+	for _, result := range results {
+		fmt.Println(result)
+	}
+
+	elapsed := time.Since(start)
+	fmt.Printf("Execution time: %s\n", elapsed)
+}
+
+func getValidURLs(url string) {
+	defer wg.Done()
+
+	if contains(results, strings.TrimSuffix(url, "/")) {
+		return
+	}
+
+	statusCode, node := fetchURL(url)
+	if statusCode == http.StatusOK {
+		mut.Lock()
+		results = append(results, url)
+		mut.Unlock()
+		hrefs := getHrefs(url, node)
+		for _, href := range hrefs {
+			wg.Add(1)
+			go getValidURLs(href)
+		}
+	}
+}
+
+func fetchURL(url string) (statusCode int, node *html.Node) {
+	fmt.Println("Checking URL:", url)
+
+	response, err := http.Get(url)
 	if err != nil {
 		panic(err)
 	}
 	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		return response.StatusCode, nil
+	}
 
 	bytes, err := io.ReadAll(response.Body)
 	if err != nil {
@@ -24,13 +82,12 @@ func main() {
 	}
 
 	rawHtml := string(bytes)
-	node, err := html.Parse(strings.NewReader(rawHtml))
+	_node, err := html.Parse(strings.NewReader(rawHtml))
 	if err != nil {
 		panic(err)
 	}
 
-	hrefs := getHrefs(URL, node)
-	fmt.Println(hrefs)
+	return response.StatusCode, _node
 }
 
 func getHrefs(baseHost string, n *html.Node) []string {
@@ -38,7 +95,12 @@ func getHrefs(baseHost string, n *html.Node) []string {
 	if n.Type == html.ElementNode && n.Data == "a" {
 		for _, a := range n.Attr {
 			if a.Key == "href" && isBaseHost(baseHost, a.Val) {
-				result = append(result, addPath(baseHost, a.Val))
+				parsedURL, err := url.Parse(baseHost)
+				if err != nil {
+					panic(err)
+				}
+
+				result = append(result, addPath(parsedURL.Scheme+"://"+parsedURL.Host, a.Val))
 				break
 			}
 		}
@@ -54,8 +116,14 @@ func isBaseHost(baseHost string, href string) bool {
 }
 
 func addPath(baseHost string, href string) string {
+	// If href is already a full URL, return it
+	if strings.HasPrefix(href, baseHost) {
+		return href
+	}
+
 	// Remove leading slash from href and trailing slash from baseHost
 	href = strings.TrimPrefix(href, "/")
 	baseHost = strings.TrimSuffix(baseHost, "/")
+
 	return baseHost + "/" + href
 }
