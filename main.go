@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -12,19 +13,17 @@ import (
 	"golang.org/x/net/html"
 )
 
-func contains(arr []string, val string) bool {
-	for _, item := range arr {
-		if item == val {
-			return true
-		}
-	}
-	return false
-}
+var wg = &sync.WaitGroup{}
+var mut = sync.Mutex{}
 
 var results = []string{}
 
-var wg = &sync.WaitGroup{}
-var mut = &sync.Mutex{}
+func checkURL(url string) bool {
+	mut.Lock()
+	inArray := slices.Contains(results, strings.TrimSuffix(url, "/"))
+	mut.Unlock()
+	return inArray
+}
 
 func main() {
 	start := time.Now()
@@ -39,6 +38,8 @@ func main() {
 		fmt.Println(result)
 	}
 
+	fmt.Println("Total URLs found:", len(results))
+
 	elapsed := time.Since(start)
 	fmt.Printf("Execution time: %s\n", elapsed)
 }
@@ -46,7 +47,7 @@ func main() {
 func getValidURLs(url string) {
 	defer wg.Done()
 
-	if contains(results, strings.TrimSuffix(url, "/")) {
+	if checkURL(url) {
 		return
 	}
 
@@ -55,6 +56,7 @@ func getValidURLs(url string) {
 		mut.Lock()
 		results = append(results, url)
 		mut.Unlock()
+
 		hrefs := getHrefs(url, node)
 		for _, href := range hrefs {
 			wg.Add(1)
