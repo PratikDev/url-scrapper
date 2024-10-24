@@ -5,12 +5,51 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
+	"sync"
 
 	"golang.org/x/net/html"
 )
 
-func GetHrefs(baseHost string, n *html.Node) []string {
+func GetValidURLs(wg *sync.WaitGroup, mut *sync.Mutex, results *[]string, seen *[]string, url string) {
+	defer wg.Done()
+
+	// if url is already seen, return
+	if isVisited(mut, seen, url) {
+		return
+	}
+
+	statusCode, node := fetchURL(url)
+
+	// if the status is not ok, return
+	if statusCode != http.StatusOK {
+		return
+	}
+
+	mut.Lock()
+	*results = append(*results, url)
+	mut.Unlock()
+
+	hrefs := getHrefs(url, node)
+	for _, href := range hrefs {
+		wg.Add(1)
+		// recursively call getValidURLs
+		go GetValidURLs(wg, mut, results, seen, href)
+	}
+}
+
+func isVisited(mut *sync.Mutex, seen *[]string, url string) bool {
+	mut.Lock()
+	defer mut.Unlock()
+	if slices.Contains(*seen, url) {
+		return true
+	}
+	*seen = append(*seen, url)
+	return false
+}
+
+func getHrefs(baseHost string, n *html.Node) []string {
 	result := []string{}
 	if n.Type == html.ElementNode && n.Data == "a" {
 		for _, a := range n.Attr {
@@ -26,7 +65,7 @@ func GetHrefs(baseHost string, n *html.Node) []string {
 		}
 	}
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
-		result = append(result, GetHrefs(baseHost, c)...)
+		result = append(result, getHrefs(baseHost, c)...)
 	}
 	return result
 }
@@ -48,12 +87,12 @@ func addPath(baseHost string, href string) string {
 	return baseHost + "/" + href
 }
 
-func FetchURL(url string) (statusCode int, node *html.Node) {
+func fetchURL(url string) (statusCode int, node *html.Node) {
 	fmt.Println("Checking URL:", url)
 
 	response, err := http.Get(url)
 	if err != nil {
-		panic(err)
+		return http.StatusServiceUnavailable, nil
 	}
 	defer response.Body.Close()
 
